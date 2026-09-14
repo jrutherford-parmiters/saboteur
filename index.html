@@ -57,6 +57,13 @@
   .tab-btn[data-active="true"]{ color:var(--ink); border-color:var(--cyan); }
   @media (prefers-reduced-motion: reduce){ .pulse{ animation:none; } .glow-btn,.drawer,.chev{ transition:none; } }
   .focus-ring:focus-visible{ outline: 2px solid var(--cyan); outline-offset: 2px; }
+  .quiz-option{ border:1px solid var(--line); background:var(--panel-2); transition: all .15s ease; cursor:pointer; text-align:left; }
+  .quiz-option:hover:not(:disabled){ border-color: var(--cyan); }
+  .quiz-option:disabled{ cursor:default; }
+  .quiz-option[data-state="correct"]{ border-color: var(--green); background: rgba(107,207,127,0.12); }
+  .quiz-option[data-state="incorrect"]{ border-color: var(--crimson); background: rgba(255,77,109,0.12); }
+  .quiz-option[data-state="reveal"]{ border-color: var(--green); background: rgba(107,207,127,0.06); }
+  .quiz-option[data-state="dim"]{ opacity: 0.45; }
 </style>
 </head>
 <body class="min-h-screen scanlines">
@@ -190,16 +197,27 @@
     </section>
   </main>
 
-  <!-- SUSPECT LINES -->
+  <!-- SUSPECT LINE QUIZ -->
   <div id="suspectPanel" class="hidden mt-6 border border-[var(--line)] bg-[var(--panel)] rounded-lg p-4">
-    <h2 class="text-sm font-medium flex items-center gap-2 mb-1">
-      <i data-lucide="crosshair" class="w-4 h-4 text-[var(--amber)]"></i>
-      Suspect lines
-    </h2>
+    <div class="flex items-center justify-between mb-1">
+      <h2 class="text-sm font-medium flex items-center gap-2">
+        <i data-lucide="crosshair" class="w-4 h-4 text-[var(--amber)]"></i>
+        Find the bug
+      </h2>
+      <span id="quizProgress" class="mono text-[11px] text-[var(--ink-dim)]"></span>
+    </div>
     <p class="text-xs text-[var(--ink-dim)] mb-3 leading-relaxed">
-      One bug, three suspects. Exactly one line per group is the actual mutation — the other two are red herrings to make you actually read the code instead of guessing.
+      Three lines, one real mutation. Click the line you think is actually broken — no skimming, you have to reason about what each line does.
     </p>
-    <div id="suspectGroups" class="flex flex-col gap-3"></div>
+    <div id="quizQuestion" class="flex flex-col gap-2"></div>
+    <div id="quizExplain" class="hidden mt-3 text-xs rounded-md p-3 border"></div>
+    <div class="flex items-center justify-between mt-3">
+      <span id="quizScore" class="mono text-[11px] text-[var(--ink-dim)]"></span>
+      <button id="quizNext" class="hidden glow-btn mono text-xs px-4 py-2 rounded-md bg-[var(--cyan)] text-[#0b0d10] font-semibold flex items-center gap-2 focus-ring">
+        Next question <i data-lucide="arrow-right" class="w-3.5 h-3.5"></i>
+      </button>
+    </div>
+    <div id="quizDone" class="hidden mt-2 text-xs text-[var(--ink-dim)] leading-relaxed"></div>
   </div>
 
   <!-- BOTTOM DRAWER -->
@@ -411,7 +429,12 @@ const drawerChev = $('drawerChev');
 const diffOutput = $('diffOutput');
 const manifestOutput = $('manifestOutput');
 const suspectPanel = $('suspectPanel');
-const suspectGroups = $('suspectGroups');
+const quizProgress = $('quizProgress');
+const quizQuestion = $('quizQuestion');
+const quizExplain = $('quizExplain');
+const quizScore = $('quizScore');
+const quizNext = $('quizNext');
+const quizDone = $('quizDone');
 const toast = $('toast');
 const toastMsg = $('toastMsg');
 
@@ -751,19 +774,38 @@ function runMutation() {
 
   renderDiff(originalLines, workingLines);
   renderManifest(manifest);
-  renderSuspects(manifest, workingLines, ranges);
+  buildQuiz(manifest, workingLines, ranges);
   flashOutput();
 }
 
 /* ---------------------------------------------------------------
-   Suspect lines — the real bug line plus 2 red-herring lines,
-   so students get a narrowed search space without the answer.
+   Interactive "Find the bug" quiz — one bug per question, 3 lines
+   to choose from (the real mutation + 2 hard-to-distinguish
+   red herrings), instant feedback, then advance automatically.
 --------------------------------------------------------------- */
-function renderSuspects(manifest, workingLines, ranges) {
+let quizState = null;
+
+function tokenSignature(text) {
+  // crude structural fingerprint so herrings are chosen from lines
+  // that "look like" they could plausibly be the bug — not just
+  // any random line, which would make the quiz trivial.
+  const sig = [];
+  if (/[<>]=?/.test(text)) sig.push('compare');
+  if (/[+\-]=/.test(text)) sig.push('assign-op');
+  if (/===|!==/.test(text)) sig.push('strict-eq');
+  if (/&&|\|\|/.test(text)) sig.push('boolean');
+  if (/localStorage/.test(text)) sig.push('storage');
+  if (/getElementById|querySelector/.test(text)) sig.push('dom');
+  if (/clearInterval|removeEventListener|addEventListener|setInterval/.test(text)) sig.push('timer-event');
+  if (/\w+\s*\(/.test(text)) sig.push('call');
+  if (/\.length/.test(text)) sig.push('length');
+  return sig;
+}
+
+function buildQuiz(manifest, workingLines, ranges) {
   const bugLineNums = new Set(manifest.map(m => m.line));
 
-  // pool of plausible-looking, non-trivial mutable lines that are NOT bugs
-  const herringPool = [];
+  const pool = [];
   for (let i = 0; i < workingLines.length; i++) {
     const lineNum = i + 1;
     if (bugLineNums.has(lineNum)) continue;
@@ -771,48 +813,109 @@ function renderSuspects(manifest, workingLines, ranges) {
     const text = workingLines[i].trim();
     if (text.length < 6) continue;
     if (/^(\/\/|\*|\/\*)/.test(text)) continue;
-    herringPool.push(lineNum);
+    pool.push({ line: lineNum, text: workingLines[i], sig: tokenSignature(text) });
   }
 
   const usedHerrings = new Set();
-  const groups = manifest.map((m, idx) => {
-    const available = herringPool.filter(n => !usedHerrings.has(n));
-    const herrings = [];
-    while (herrings.length < 2 && available.length > 0) {
-      const pickIdx = Math.floor(rng() * available.length);
-      const candidate = available.splice(pickIdx, 1)[0];
-      herrings.push(candidate);
-      usedHerrings.add(candidate);
+  const questions = manifest.map((m, idx) => {
+    const bugSig = tokenSignature(m.mutated);
+    // rank herring candidates by how many structural tokens they share
+    // with the buggy line, so options look equally plausible
+    const ranked = pool
+      .filter(p => !usedHerrings.has(p.line))
+      .map(p => ({ ...p, overlap: p.sig.filter(s => bugSig.includes(s)).length }))
+      .sort((a, b) => (b.overlap - a.overlap) || (rng() - 0.5));
+
+    const herrings = ranked.slice(0, 2);
+    herrings.forEach(h => usedHerrings.add(h.line));
+    // fall back to any remaining line if the file is short on similar ones
+    while (herrings.length < 2) {
+      const fallback = pool.find(p => !usedHerrings.has(p.line));
+      if (!fallback) break;
+      herrings.push(fallback);
+      usedHerrings.add(fallback.line);
     }
-    const suspects = [m.line, ...herrings].map(n => ({ line: n, text: workingLines[n - 1] }));
-    // shuffle so the real bug isn't always listed first
-    for (let i = suspects.length - 1; i > 0; i--) {
+
+    const options = [{ line: m.line, text: m.mutated, isBug: true }, ...herrings.map(h => ({ line: h.line, text: h.text, isBug: false }))];
+    for (let i = options.length - 1; i > 0; i--) {
       const j = Math.floor(rng() * (i + 1));
-      [suspects[i], suspects[j]] = [suspects[j], suspects[i]];
+      [options[i], options[j]] = [options[j], options[i]];
     }
-    return { idx, category: m.category, suspects };
+    return { manifestEntry: m, options };
   });
 
-  suspectGroups.innerHTML = groups.map(g => `
-    <div class="border border-[var(--line)] rounded-md p-3">
-      <div class="flex items-center gap-2 mb-2">
-        <span class="badge-dot" style="background:${CAT_COLORS[g.category] || 'var(--ink-dim)'}"></span>
-        <span class="mono text-[11px] text-[var(--ink-dim)]">GROUP ${g.idx + 1} · ${CAT_LABELS[g.category] || g.category}</span>
-      </div>
-      <div class="flex flex-col gap-1.5">
-        ${g.suspects.map(s => `
-          <div class="mono text-[11.5px] px-2.5 py-1.5 rounded bg-[var(--panel-2)] border border-[var(--line)] flex gap-3 whitespace-pre-wrap break-all">
-            <span class="text-[var(--ink-dim)] shrink-0">L${s.line}</span>
-            <span>${escapeHtml(s.text.trim())}</span>
-          </div>
-        `).join('')}
-      </div>
-    </div>
-  `).join('');
-
+  quizState = { questions, current: 0, correct: 0, answered: false };
   suspectPanel.classList.remove('hidden');
-  lucide.createIcons();
+  quizDone.classList.add('hidden');
+  quizNext.classList.add('hidden');
+  renderQuizQuestion();
 }
+
+function renderQuizQuestion() {
+  const q = quizState.questions[quizState.current];
+  quizState.answered = false;
+  quizProgress.textContent = `Question ${quizState.current + 1} of ${quizState.questions.length}`;
+  quizScore.textContent = quizState.current > 0 ? `Score so far: ${quizState.correct}/${quizState.current}` : '';
+  quizExplain.classList.add('hidden');
+  quizNext.classList.add('hidden');
+
+  quizQuestion.innerHTML = q.options.map((opt, i) => `
+    <button class="quiz-option mono text-[12px] leading-relaxed px-3 py-2.5 rounded-md w-full flex gap-3 whitespace-pre-wrap break-all" data-opt-idx="${i}">
+      <span class="text-[var(--ink-dim)] shrink-0">L${opt.line}</span>
+      <span>${escapeHtml(opt.text.trim())}</span>
+    </button>
+  `).join('');
+  lucide.createIcons();
+
+  quizQuestion.querySelectorAll('.quiz-option').forEach(btn => {
+    btn.addEventListener('click', () => handleQuizAnswer(parseInt(btn.dataset.optIdx, 10)));
+  });
+}
+
+function handleQuizAnswer(optIdx) {
+  if (quizState.answered) return;
+  quizState.answered = true;
+  const q = quizState.questions[quizState.current];
+  const chosen = q.options[optIdx];
+  const correctIdx = q.options.findIndex(o => o.isBug);
+
+  if (chosen.isBug) quizState.correct++;
+
+  quizQuestion.querySelectorAll('.quiz-option').forEach((btn, i) => {
+    btn.disabled = true;
+    if (i === correctIdx) btn.dataset.state = i === optIdx ? 'correct' : 'reveal';
+    else if (i === optIdx) btn.dataset.state = 'incorrect';
+    else btn.dataset.state = 'dim';
+  });
+
+  const m = q.manifestEntry;
+  quizExplain.classList.remove('hidden');
+  if (chosen.isBug) {
+    quizExplain.className = 'mt-3 text-xs rounded-md p-3 border';
+    quizExplain.style.borderColor = 'var(--green)';
+    quizExplain.style.background = 'rgba(107,207,127,0.08)';
+    quizExplain.innerHTML = `<strong class="text-[var(--green)]">Correct.</strong> ${m.detail}<br><span class="text-[var(--cyan)]">${m.devtool}</span>`;
+  } else {
+    quizExplain.className = 'mt-3 text-xs rounded-md p-3 border';
+    quizExplain.style.borderColor = 'var(--crimson)';
+    quizExplain.style.background = 'rgba(255,77,109,0.08)';
+    quizExplain.innerHTML = `<strong class="text-[var(--crimson)]">Not this one.</strong> Line ${q.options[optIdx].line} works as intended. The actual bug is on line ${m.line}: ${m.detail}<br><span class="text-[var(--cyan)]">${m.devtool}</span>`;
+  }
+
+  quizScore.textContent = `Score so far: ${quizState.correct}/${quizState.current + 1}`;
+
+  if (quizState.current < quizState.questions.length - 1) {
+    quizNext.classList.remove('hidden');
+  } else {
+    quizDone.classList.remove('hidden');
+    quizDone.textContent = `Quiz complete — ${quizState.correct}/${quizState.questions.length} correct. Open the diff and audit log below to check every line against your reasoning.`;
+  }
+}
+
+quizNext.addEventListener('click', () => {
+  quizState.current++;
+  renderQuizQuestion();
+});
 
 function describeMutation(ruleId, original, mutated) {
   switch (ruleId) {
@@ -992,7 +1095,10 @@ $('btnReset').addEventListener('click', () => {
   drawerToggle.disabled = true;
   diffOutput.innerHTML = '';
   manifestOutput.innerHTML = '';
-  suspectGroups.innerHTML = '';
+  quizQuestion.innerHTML = '';
+  quizExplain.classList.add('hidden');
+  quizDone.classList.add('hidden');
+  quizState = null;
   suspectPanel.classList.add('hidden');
   closeDrawer();
 });
