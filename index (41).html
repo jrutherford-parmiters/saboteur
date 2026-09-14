@@ -1,0 +1,1062 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Code Saboteur — Mutation Testing for A-Level CS</title>
+<script src="https://cdn.tailwindcss.com"></script>
+<script src="https://unpkg.com/lucide@latest/dist/umd/lucide.js"></script>
+<style>
+  :root{
+    --bg:#0b0d10; --panel:#14171c; --panel-2:#1a1e24; --line:#262b33;
+    --ink:#e6e9ee; --ink-dim:#8b93a1;
+    --cyan:#4dd8e6; --crimson:#ff4d6d; --amber:#ffb454; --green:#6bcf7f;
+  }
+  html,body{ background:var(--bg); color:var(--ink); }
+  body{ font-family:'Inter',system-ui,sans-serif; }
+  .mono{ font-family:'JetBrains Mono',ui-monospace,'SFMono-Regular',Menlo,monospace; }
+  .scanlines{ background-image: repeating-linear-gradient(0deg, rgba(255,255,255,0.012) 0px, rgba(255,255,255,0.012) 1px, transparent 1px, transparent 3px); }
+  .code-area{ background:var(--panel); border:1px solid var(--line); color:var(--ink); caret-color:var(--cyan); tab-size:2; }
+  .code-area:focus{ outline:none; border-color:#34404d; }
+  ::selection{ background:rgba(77,216,230,0.25); }
+  .glow-btn{ transition: box-shadow .25s ease, transform .12s ease, background-color .2s ease, opacity .2s ease; }
+  .glow-btn:hover:not(:disabled){ box-shadow:0 0 26px rgba(255,77,109,0.45); }
+  .glow-btn:active:not(:disabled){ transform:scale(0.98); }
+  .glow-btn:disabled{ opacity:0.5; cursor:not-allowed; }
+  @keyframes pulse-ring{
+    0%{ box-shadow:0 0 0 0 rgba(255,77,109,0.4); }
+    70%{ box-shadow:0 0 0 14px rgba(255,77,109,0); }
+    100%{ box-shadow:0 0 0 0 rgba(255,77,109,0); }
+  }
+  .pulse{ animation: pulse-ring 2.6s cubic-bezier(0.4,0,0.6,1) infinite; }
+  .pill{ border:1px solid var(--line); background:var(--panel-2); color:var(--ink-dim); transition:all .15s ease; cursor:pointer; }
+  .pill:hover{ border-color:#3a4250; }
+  .pill[data-active="true"][data-level="easy"]{ background:var(--green); color:#0b0d10; border-color:transparent; }
+  .pill[data-active="true"][data-level="medium"]{ background:var(--amber); color:#0b0d10; border-color:transparent; }
+  .pill[data-active="true"][data-level="hard"]{ background:var(--crimson); color:#fff; border-color:transparent; }
+  .cat-chip{ border:1px solid var(--line); background:var(--panel-2); transition:all .15s ease; cursor:pointer; }
+  .cat-chip[data-active="true"]{ border-color:var(--cyan); background:rgba(77,216,230,0.08); }
+  .chk{ accent-color:var(--cyan); }
+  .diff-add{ background:rgba(107,207,127,0.10); border-left:3px solid var(--green); }
+  .diff-del{ background:rgba(255,77,109,0.10); border-left:3px solid var(--crimson); }
+  .diff-ctx{ border-left:3px solid transparent; color:var(--ink-dim); }
+  .drawer{ max-height:0; overflow:hidden; transition:max-height .4s ease; }
+  .drawer.open{ max-height:6000px; }
+  .lc-gutter{ color:#4a5361; user-select:none; text-align:right; }
+  ::-webkit-scrollbar{ width:10px; height:10px; }
+  ::-webkit-scrollbar-track{ background:var(--panel); }
+  ::-webkit-scrollbar-thumb{ background:#2a303a; border-radius:6px; }
+  ::-webkit-scrollbar-thumb:hover{ background:#384252; }
+  .badge-dot{ width:7px; height:7px; border-radius:999px; display:inline-block; }
+  .toast{ transform:translateY(160%); transition:transform .3s ease; }
+  .toast.show{ transform:translateY(0); }
+  textarea{ resize:none; }
+  .chev{ transition: transform .25s ease; }
+  .chev.rot{ transform: rotate(180deg); }
+  .tab-btn{ color:var(--ink-dim); border-bottom:2px solid transparent; }
+  .tab-btn[data-active="true"]{ color:var(--ink); border-color:var(--cyan); }
+  @media (prefers-reduced-motion: reduce){ .pulse{ animation:none; } .glow-btn,.drawer,.chev{ transition:none; } }
+  .focus-ring:focus-visible{ outline: 2px solid var(--cyan); outline-offset: 2px; }
+</style>
+</head>
+<body class="min-h-screen scanlines">
+
+<div class="max-w-[1500px] mx-auto px-5 md:px-8 py-6 pb-16">
+
+  <header class="flex flex-col md:flex-row md:items-end justify-between gap-4 pb-6 border-b border-[var(--line)]">
+    <div>
+      <div class="flex items-center gap-3">
+        <div class="w-9 h-9 rounded-md bg-[var(--panel-2)] border border-[var(--line)] flex items-center justify-center text-[var(--crimson)]">
+          <i data-lucide="bug" class="w-5 h-5"></i>
+        </div>
+        <h1 class="text-2xl md:text-[26px] font-semibold tracking-tight">Code Saboteur</h1>
+      </div>
+      <p class="text-[var(--ink-dim)] text-sm mt-2 max-w-xl leading-relaxed">
+        Mutation testing for A-Level CS. Paste working code, let the engine break it on purpose, then hunt the defects with DevTools like you mean it.
+      </p>
+    </div>
+    <div class="flex items-center gap-2 flex-wrap">
+      <button id="btnSample" class="mono text-xs px-3 py-2 rounded-md border border-[var(--line)] bg-[var(--panel-2)] hover:border-[var(--cyan)] hover:text-[var(--cyan)] transition-colors flex items-center gap-2 focus-ring">
+        <i data-lucide="gamepad-2" class="w-3.5 h-3.5"></i> Load sample game code
+      </button>
+      <button id="btnReset" class="mono text-xs px-3 py-2 rounded-md border border-[var(--line)] bg-[var(--panel-2)] hover:border-[var(--crimson)] hover:text-[var(--crimson)] transition-colors flex items-center gap-2 focus-ring">
+        <i data-lucide="rotate-ccw" class="w-3.5 h-3.5"></i> Reset
+      </button>
+    </div>
+  </header>
+
+  <main class="grid grid-cols-1 lg:grid-cols-2 gap-5 mt-6">
+
+    <!-- LEFT: INPUT -->
+    <section class="flex flex-col gap-2">
+      <div class="flex items-center justify-between">
+        <h2 class="text-sm font-medium text-[var(--ink-dim)] flex items-center gap-2">
+          <i data-lucide="file-code-2" class="w-4 h-4"></i> Original — index.html
+        </h2>
+        <div id="inputStats" class="mono text-[11px] text-[var(--ink-dim)]">0 lines · 0 chars</div>
+      </div>
+      <textarea id="inputCode" spellcheck="false"
+        class="code-area mono text-[13px] leading-[1.55] w-full h-[440px] rounded-lg p-4 focus-ring"
+        placeholder="Paste your working single-file index.html here (HTML + CSS + JS)..."></textarea>
+      <div id="inputWarning" class="hidden text-xs text-[var(--amber)] items-center gap-2 mt-1">
+        <i data-lucide="triangle-alert" class="w-3.5 h-3.5 inline"></i>
+        <span></span>
+      </div>
+    </section>
+
+    <!-- RIGHT: CONTROLS + OUTPUT -->
+    <section class="flex flex-col gap-4">
+
+      <div class="border border-[var(--line)] bg-[var(--panel)] rounded-lg p-4">
+        <div class="mb-4">
+          <div class="text-xs font-medium text-[var(--ink-dim)] mb-2 uppercase tracking-wide">Difficulty</div>
+          <div class="flex gap-2" id="levelPills">
+            <button class="pill" data-level="easy" data-active="true" data-bugs="1" style="padding:.5rem .9rem;border-radius:.5rem;">
+              <span class="mono text-xs font-medium">Easy · 1 bug</span>
+            </button>
+            <button class="pill" data-level="medium" data-active="false" data-bugs="2" style="padding:.5rem .9rem;border-radius:.5rem;">
+              <span class="mono text-xs font-medium">Medium · 2 bugs</span>
+            </button>
+            <button class="pill" data-level="hard" data-active="false" data-bugs="3" style="padding:.5rem .9rem;border-radius:.5rem;">
+              <span class="mono text-xs font-medium">Hard · 3 bugs</span>
+            </button>
+          </div>
+        </div>
+
+        <div class="mb-4">
+          <div class="text-xs font-medium text-[var(--ink-dim)] mb-2 uppercase tracking-wide">Bug categories</div>
+          <div class="grid grid-cols-2 gap-2" id="categoryChips">
+            <label class="cat-chip flex items-center gap-2 px-3 py-2 rounded-md text-xs" data-active="true" data-cat="syntax">
+              <input type="checkbox" class="chk" checked data-cat-input="syntax"><span>Syntax &amp; typos</span>
+            </label>
+            <label class="cat-chip flex items-center gap-2 px-3 py-2 rounded-md text-xs" data-active="true" data-cat="logic">
+              <input type="checkbox" class="chk" checked data-cat-input="logic"><span>Logical operators</span>
+            </label>
+            <label class="cat-chip flex items-center gap-2 px-3 py-2 rounded-md text-xs" data-active="true" data-cat="state">
+              <input type="checkbox" class="chk" checked data-cat-input="state"><span>State &amp; scope</span>
+            </label>
+            <label class="cat-chip flex items-center gap-2 px-3 py-2 rounded-md text-xs" data-active="true" data-cat="dom">
+              <input type="checkbox" class="chk" checked data-cat-input="dom"><span>DOM / event listeners</span>
+            </label>
+          </div>
+        </div>
+
+        <div class="mb-4 flex items-end gap-3">
+          <div class="flex-1">
+            <div class="text-xs font-medium text-[var(--ink-dim)] mb-2 uppercase tracking-wide">Mode</div>
+            <div class="flex gap-2">
+              <button id="modeRandom" class="pill" data-active="true" style="padding:.5rem .9rem;border-radius:.5rem;">
+                <span class="mono text-xs">Random</span>
+              </button>
+              <button id="modeSeed" class="pill" data-active="false" style="padding:.5rem .9rem;border-radius:.5rem;">
+                <span class="mono text-xs">Seeded</span>
+              </button>
+            </div>
+          </div>
+          <div id="seedWrap" class="hidden flex-1">
+            <div class="text-xs font-medium text-[var(--ink-dim)] mb-2 uppercase tracking-wide">Seed</div>
+            <input id="seedInput" type="text" placeholder="e.g. 7B-period3" class="mono text-xs w-full px-3 py-2 rounded-md bg-[var(--panel-2)] border border-[var(--line)] text-[var(--ink)] focus-ring" />
+          </div>
+        </div>
+
+        <button id="btnSabotage" class="glow-btn pulse w-full rounded-lg py-3 bg-[var(--crimson)] text-white font-semibold text-sm flex items-center justify-center gap-2 focus-ring">
+          <i data-lucide="skull" class="w-4 h-4"></i> Sabotage Code
+        </button>
+        <div id="engineError" class="hidden text-xs text-[var(--crimson)] mt-2 flex items-center gap-2">
+          <i data-lucide="circle-alert" class="w-3.5 h-3.5"></i><span></span>
+        </div>
+      </div>
+
+      <!-- Output -->
+      <div class="flex flex-col gap-2">
+        <div class="flex items-center justify-between">
+          <h2 class="text-sm font-medium text-[var(--ink-dim)] flex items-center gap-2">
+            <i data-lucide="skull" class="w-4 h-4 text-[var(--crimson)]"></i> Sabotaged output
+          </h2>
+          <div class="flex items-center gap-2">
+            <button id="btnCopy" disabled class="glow-btn mono text-[11px] px-3 py-1.5 rounded-md border border-[var(--line)] bg-[var(--panel-2)] hover:border-[var(--cyan)] hover:text-[var(--cyan)] flex items-center gap-1.5 focus-ring">
+              <i data-lucide="copy" class="w-3.5 h-3.5"></i> Copy
+            </button>
+            <button id="btnDownload" disabled class="glow-btn mono text-[11px] px-3 py-1.5 rounded-md border border-[var(--line)] bg-[var(--panel-2)] hover:border-[var(--cyan)] hover:text-[var(--cyan)] flex items-center gap-1.5 focus-ring">
+              <i data-lucide="download" class="w-3.5 h-3.5"></i> Download
+            </button>
+          </div>
+        </div>
+        <textarea id="outputCode" readonly spellcheck="false"
+          class="code-area mono text-[13px] leading-[1.55] w-full h-[220px] rounded-lg p-4 focus-ring"
+          placeholder="Sabotaged code will appear here..."></textarea>
+      </div>
+
+    </section>
+  </main>
+
+  <!-- SUSPECT LINES -->
+  <div id="suspectPanel" class="hidden mt-6 border border-[var(--line)] bg-[var(--panel)] rounded-lg p-4">
+    <h2 class="text-sm font-medium flex items-center gap-2 mb-1">
+      <i data-lucide="crosshair" class="w-4 h-4 text-[var(--amber)]"></i>
+      Suspect lines
+    </h2>
+    <p class="text-xs text-[var(--ink-dim)] mb-3 leading-relaxed">
+      One bug, three suspects. Exactly one line per group is the actual mutation — the other two are red herrings to make you actually read the code instead of guessing.
+    </p>
+    <div id="suspectGroups" class="flex flex-col gap-3"></div>
+  </div>
+
+  <!-- BOTTOM DRAWER -->
+  <div class="mt-6 border border-[var(--line)] bg-[var(--panel)] rounded-lg overflow-hidden">
+    <button id="drawerToggle" disabled class="w-full flex items-center justify-between px-5 py-3.5 text-left disabled:opacity-40">
+      <span class="text-sm font-medium flex items-center gap-2">
+        <i data-lucide="folder-search" class="w-4 h-4 text-[var(--amber)]"></i>
+        Reveal diff / answer key
+      </span>
+      <i data-lucide="chevron-down" class="w-4 h-4 chev" id="drawerChev"></i>
+    </button>
+    <div id="drawerBody" class="drawer">
+      <div class="border-t border-[var(--line)] px-5 py-4">
+        <div class="flex gap-5 mb-4 border-b border-[var(--line)]">
+          <button class="tab-btn py-2 text-xs font-medium mono" data-tab="diff" data-active="true">DIFF VIEW</button>
+          <button class="tab-btn py-2 text-xs font-medium mono" data-tab="manifest" data-active="false">FORENSIC AUDIT LOG</button>
+        </div>
+        <div id="tabDiff">
+          <div id="diffOutput" class="mono text-[12.5px] leading-[1.6] rounded-md overflow-hidden border border-[var(--line)]"></div>
+        </div>
+        <div id="tabManifest" class="hidden">
+          <div id="manifestOutput" class="flex flex-col gap-3"></div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <footer class="mt-8 text-center text-[11px] text-[var(--ink-dim)] mono">
+    Client-side only · nothing you paste ever leaves your browser
+  </footer>
+</div>
+
+<div id="toast" class="toast fixed bottom-5 left-1/2 -translate-x-1/2 bg-[var(--panel-2)] border border-[var(--line)] text-xs px-4 py-2.5 rounded-md flex items-center gap-2 shadow-lg">
+  <i data-lucide="check" class="w-3.5 h-3.5 text-[var(--green)]"></i>
+  <span id="toastMsg">Copied</span>
+</div>
+
+<script>
+lucide.createIcons();
+
+/* ---------------------------------------------------------------
+   SAMPLE CODE — a small HTML5 canvas dodge game, self-contained
+--------------------------------------------------------------- */
+const SAMPLE_CODE = `<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Dodge Game</title>
+<style>
+  body { margin: 0; background: #111; display: flex; align-items: center; justify-content: center; height: 100vh; font-family: sans-serif; }
+  #canvas { background: #222; border: 2px solid #555; }
+  #hud { position: fixed; top: 10px; left: 10px; color: #fff; font-size: 18px; }
+</style>
+</head>
+<body>
+<div id="hud">Score: <span id="scoreDisplay">0</span> | Best: <span id="bestDisplay">0</span></div>
+<canvas id="canvas" width="480" height="320"></canvas>
+<script>
+  const canvas = document.getElementById('canvas');
+  const ctx = canvas.getContext('2d');
+  const scoreDisplay = document.getElementById('scoreDisplay');
+  const bestDisplay = document.getElementById('bestDisplay');
+
+  let playerScore = 0;
+  let bestScore = localStorage.getItem('topScore') ? parseInt(localStorage.getItem('topScore')) : 0;
+  bestDisplay.textContent = bestScore;
+
+  const player = { x: 220, y: 280, size: 20, speed: 5 };
+  let obstacles = [];
+  let timerId = null;
+  let gameOver = false;
+
+  const keys = {};
+  window.addEventListener('keydown', (e) => { keys[e.key] = true; });
+  window.addEventListener('keyup', (e) => { keys[e.key] = false; });
+
+  function spawnObstacle() {
+    const x = Math.random() * (canvas.width - 20);
+    obstacles.push({ x: x, y: -20, size: 20, vy: 3 });
+  }
+
+  function update() {
+    if (gameOver) return;
+
+    if (keys['ArrowLeft'] || keys['a']) player.x -= player.speed;
+    if (keys['ArrowRight'] || keys['d']) player.x += player.speed;
+    player.x = Math.max(0, Math.min(canvas.width - player.size, player.x));
+
+    for (let i = 0; i < obstacles.length; i++) {
+      obstacles[i].y += obstacles[i].vy;
+    }
+
+    obstacles = obstacles.filter(o => o.y < canvas.height + 20);
+
+    for (const o of obstacles) {
+      const dx = (o.x + o.size / 2) - (player.x + player.size / 2);
+      const dy = (o.y + o.size / 2) - (player.y + player.size / 2);
+      const distance = Math.sqrt(dx * dx + dy * dy);
+      if (distance < player.size) {
+        endGame();
+      }
+    }
+
+    playerScore += 1;
+    scoreDisplay.textContent = playerScore;
+  }
+
+  function draw() {
+    ctx.clearRect(0, 0, canvas.width, canvas.height);
+    ctx.fillStyle = '#4dd8e6';
+    ctx.fillRect(player.x, player.y, player.size, player.size);
+    ctx.fillStyle = '#ff4d6d';
+    for (const o of obstacles) {
+      ctx.fillRect(o.x, o.y, o.size, o.size);
+    }
+  }
+
+  function loop() {
+    update();
+    draw();
+  }
+
+  function endGame() {
+    gameOver = true;
+    clearInterval(timerId);
+    if (playerScore > bestScore) {
+      bestScore = playerScore;
+      localStorage.setItem('topScore', bestScore);
+      bestDisplay.textContent = bestScore;
+    }
+    ctx.fillStyle = '#fff';
+    ctx.font = '20px sans-serif';
+    ctx.fillText('Game Over — refresh to retry', 90, 160);
+  }
+
+  setInterval(spawnObstacle, 900);
+  timerId = setInterval(loop, 30);
+<\/script>
+</body>
+</html>
+`;
+
+/* ---------------------------------------------------------------
+   STATE
+--------------------------------------------------------------- */
+const state = {
+  level: 'easy',
+  bugs: 1,
+  categories: { syntax: true, logic: true, state: true, dom: true },
+  mode: 'random',
+  seed: '',
+  originalLines: [],
+  mutatedLines: [],
+  manifest: [],
+  scriptRange: null // {start, end} line indices of the mutable <script> block(s), inclusive
+};
+
+/* ---------------------------------------------------------------
+   SEEDED RNG (mulberry32) so a seed reproduces identical mutations
+--------------------------------------------------------------- */
+function hashSeed(str) {
+  let h = 1779033703 ^ str.length;
+  for (let i = 0; i < str.length; i++) {
+    h = Math.imul(h ^ str.charCodeAt(i), 3432918353);
+    h = (h << 13) | (h >>> 19);
+  }
+  return () => {
+    h = Math.imul(h ^ (h >>> 16), 2246822507);
+    h = Math.imul(h ^ (h >>> 13), 3266489909);
+    h ^= h >>> 16;
+    return h >>> 0;
+  };
+}
+function mulberry32(a) {
+  return function () {
+    a |= 0; a = (a + 0x6D2B79F5) | 0;
+    let t = Math.imul(a ^ (a >>> 15), 1 | a);
+    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+}
+let rng = Math.random;
+function setRng() {
+  if (state.mode === 'seed' && state.seed.trim().length > 0) {
+    const seedFn = hashSeed(state.seed.trim());
+    rng = mulberry32(seedFn());
+  } else {
+    rng = Math.random;
+  }
+}
+function pick(arr) { return arr[Math.floor(rng() * arr.length)]; }
+function chance() { return rng(); }
+
+/* ---------------------------------------------------------------
+   DOM refs
+--------------------------------------------------------------- */
+const $ = (id) => document.getElementById(id);
+const inputCode = $('inputCode');
+const outputCode = $('outputCode');
+const inputStats = $('inputStats');
+const inputWarning = $('inputWarning');
+const engineError = $('engineError');
+const btnSabotage = $('btnSabotage');
+const btnCopy = $('btnCopy');
+const btnDownload = $('btnDownload');
+const drawerToggle = $('drawerToggle');
+const drawerBody = $('drawerBody');
+const drawerChev = $('drawerChev');
+const diffOutput = $('diffOutput');
+const manifestOutput = $('manifestOutput');
+const suspectPanel = $('suspectPanel');
+const suspectGroups = $('suspectGroups');
+const toast = $('toast');
+const toastMsg = $('toastMsg');
+
+/* ---------------------------------------------------------------
+   Input stats + validation
+--------------------------------------------------------------- */
+function updateStats() {
+  const val = inputCode.value;
+  const lines = val.length ? val.split('\n').length : 0;
+  inputStats.textContent = `${lines} lines · ${val.length} chars`;
+  if (val.trim().length > 0 && lines < 20) {
+    inputWarning.classList.remove('hidden');
+    inputWarning.classList.add('flex');
+    inputWarning.querySelector('span').textContent = 'Under 20 lines — the engine works best on a fuller program. You can still proceed.';
+  } else {
+    inputWarning.classList.add('hidden');
+    inputWarning.classList.remove('flex');
+  }
+}
+inputCode.addEventListener('input', updateStats);
+
+/* ---------------------------------------------------------------
+   Locate <script> blocks — mutations are restricted to these lines
+--------------------------------------------------------------- */
+function findScriptLineRanges(lines) {
+  const ranges = [];
+  let inScript = false;
+  let start = -1;
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i];
+    if (!inScript && /<script(\s[^>]*)?>/i.test(line) && !/<\/script>/i.test(line)) {
+      inScript = true;
+      start = i + 1; // first line AFTER the opening tag line, to avoid mutating the tag itself
+      // but if there's inline code after <script> on the same line, still allow that line as start
+      if (/<script(\s[^>]*)?>\s*\S/.test(line)) start = i;
+      continue;
+    }
+    if (inScript && /<\/script>/i.test(line)) {
+      inScript = false;
+      const end = /\S\s*<\/script>/.test(line) ? i : i - 1;
+      if (end >= start) ranges.push({ start, end });
+      continue;
+    }
+    // handle single-line script tags opened and closed on the same line
+    if (!inScript && /<script(\s[^>]*)?>.*<\/script>/i.test(line)) {
+      ranges.push({ start: i, end: i });
+    }
+  }
+  return ranges;
+}
+function isMutableLine(idx, ranges) {
+  return ranges.some(r => idx >= r.start && idx <= r.end);
+}
+
+/* ---------------------------------------------------------------
+   MUTATION RULES
+   Each rule: { id, category, level, label, devtool,
+                test(line, ctx) -> bool,
+                apply(line, ctx) -> newLine or null }
+--------------------------------------------------------------- */
+const RULES = [
+  // ---------- EASY / SYNTAX ----------
+  {
+    id: 'var-misspell', category: 'syntax', levels: ['easy','medium','hard'],
+    label: 'Variable misspelling',
+    devtool: 'Console — look for "Uncaught ReferenceError: X is not defined"',
+    test: (line) => /\b(let|const|var)\s+([a-zA-Z_$][a-zA-Z0-9_$]{3,})\s*=/.test(line),
+    apply: (line, ctx) => {
+      const m = line.match(/\b(let|const|var)\s+([a-zA-Z_$][a-zA-Z0-9_$]{3,})\s*=/);
+      if (!m) return null;
+      const varName = m[2];
+      // mutate a LATER usage of this variable elsewhere in the script, not the declaration
+      const candidates = [];
+      ctx.lines.forEach((l, i) => {
+        if (i === ctx.idx) return;
+        if (!isMutableLine(i, ctx.ranges)) return;
+        const re = new RegExp('\\b' + varName + '\\b');
+        if (re.test(l) && !/\b(let|const|var)\s+/.test(l.match(re) ? l : '')) {
+          candidates.push(i);
+        }
+      });
+      if (candidates.length === 0) return null;
+      const targetIdx = pick(candidates);
+      const original = ctx.lines[targetIdx];
+      const misspelled = chance() > 0.5 ? varName.toLowerCase() : varName.replace(/([a-z])([A-Z])/, '$1_$2');
+      const re = new RegExp('\\b' + varName + '\\b');
+      const mutated = original.replace(re, misspelled);
+      if (mutated === original) return null;
+      ctx.lines[targetIdx] = mutated;
+      ctx.log({
+        category: 'syntax', label: 'Variable misspelling',
+        original, mutated,
+        detail: `Usage of "${varName}" was changed to "${misspelled}" on this line, while the declaration is untouched.`,
+        devtool: 'Console — look for "Uncaught ReferenceError: ' + misspelled + ' is not defined"',
+        line: targetIdx + 1
+      });
+      return { handledExternally: true };
+    }
+  },
+  {
+    id: 'missing-paren', category: 'syntax', levels: ['easy','medium','hard'],
+    label: 'Missing enclosure',
+    devtool: 'Console — look for "Uncaught SyntaxError: missing ) after argument list"',
+    test: (line) => /\w\([^()]*\)\s*;?\s*$/.test(line) && !/\/\//.test(line),
+    apply: (line) => {
+      const idx = line.lastIndexOf(')');
+      if (idx === -1) return null;
+      return line.slice(0, idx) + line.slice(idx + 1);
+    }
+  },
+  {
+    id: 'dom-selector-typo', category: 'syntax', levels: ['easy','medium','hard'],
+    label: 'DOM selector ruin',
+    devtool: "Console — look for null being returned, then a TypeError like \"Cannot read properties of null (reading '...')\"",
+    test: (line) => /getElementById\(\s*['"][^'"]+['"]\s*\)/.test(line) || /querySelector\(\s*['"]#[^'"]+['"]\s*\)/.test(line),
+    apply: (line) => {
+      if (/getElementById\(\s*['"][^'"]+['"]\s*\)/.test(line)) {
+        return line.replace(/getElementById\(\s*['"]([^'"]+)['"]\s*\)/, (m, id) => `getElementById('${id}-app')`);
+      }
+      return line.replace(/querySelector\(\s*['"]#([^'"]+)['"]\s*\)/, (m, id) => `querySelector('#${id}-app')`);
+    }
+  },
+
+  // ---------- MEDIUM / LOGIC ----------
+  {
+    id: 'relational-flip', category: 'logic', levels: ['medium','hard'],
+    label: 'Relational operator flip',
+    devtool: 'Set a breakpoint or console.log the compared values — the branch taken will be inverted at the boundary',
+    test: (line) => /[^<>=!]([<>])(?!=)/.test(line) || /(<=|>=)/.test(line),
+    apply: (line) => {
+      if (/<=/.test(line) && chance() > 0.5) return line.replace('<=', '>=');
+      if (/>=/.test(line) && chance() > 0.5) return line.replace('>=', '<=');
+      if (/[^<>=!](<)(?!=)/.test(line)) return line.replace(/([^<>=!])(<)(?!=)/, '$1>');
+      if (/[^<>=!](>)(?!=)/.test(line)) return line.replace(/([^<>=!])(>)(?!=)/, '$1<');
+      return null;
+    }
+  },
+  {
+    id: 'arithmetic-swap', category: 'logic', levels: ['medium','hard'],
+    label: 'Arithmetic swap',
+    devtool: 'Watch the variable in the Scope panel while stepping — it will move the wrong direction',
+    test: (line) => /\+=|-=/.test(line),
+    apply: (line) => {
+      if (/\+=/.test(line)) return line.replace('+=', '-=');
+      if (/-=/.test(line)) return line.replace('-=', '+=');
+      return null;
+    }
+  },
+  {
+    id: 'strict-equality', category: 'logic', levels: ['medium','hard'],
+    label: 'Strict equality alteration',
+    devtool: 'Console.log the condition result directly before the "if" — it will be the opposite of what you expect',
+    test: (line) => /===|!==/.test(line),
+    apply: (line) => {
+      if (/===/.test(line)) return line.replace('===', '!==');
+      if (/!==/.test(line)) return line.replace('!==', '===');
+      return null;
+    }
+  },
+  {
+    id: 'boundary-off-by-one', category: 'logic', levels: ['medium','hard'],
+    label: 'Boundary off-by-one',
+    devtool: 'Console — look for "Uncaught TypeError: Cannot read properties of undefined" at the end of a loop, or an extra/missing iteration',
+    test: (line) => /\w+\.length\s*;?\s*(i\+\+|\+\+i)?\)?\s*\{?/.test(line) && /<\s*\w+\.length/.test(line),
+    apply: (line) => line.replace(/<\s*(\w+\.length)/, '<= $1')
+  },
+
+  // ---------- HARD / STATE & SCOPE ----------
+  {
+    id: 'storage-key-corrupt', category: 'state', levels: ['hard'],
+    label: 'Storage key corruption',
+    devtool: "Application panel → Local Storage: the key the code reads no longer matches the key that was written, so getItem() silently returns null",
+    test: (line) => /localStorage\.(get|set)Item\(\s*['"][^'"]+['"]/.test(line),
+    apply: (line) => line.replace(/localStorage\.(get|set)Item\(\s*['"]([^'"]+)['"]/, (m, method, key) => {
+      const corrupted = key.replace(/([a-z])([A-Z])/, '$1_$2').toLowerCase();
+      return `localStorage.${method}Item('${corrupted}'`;
+    })
+  },
+  {
+    id: 'timer-event-hijack', category: 'state', levels: ['hard'],
+    label: 'Timer / event hijack',
+    devtool: 'Performance panel or a manual counter — intervals will keep stacking, or a removed listener will silently do nothing on repeat triggers',
+    test: (line) => /clearInterval\(|removeEventListener\(/.test(line) && !/^\s*\/\//.test(line),
+    apply: (line) => {
+      const indentMatch = line.match(/^(\s*)/);
+      const indent = indentMatch ? indentMatch[1] : '';
+      return indent + '// ' + line.trim();
+    }
+  },
+  {
+    id: 'boolean-inversion', category: 'state', levels: ['hard'],
+    label: 'Boolean logic inversion',
+    devtool: 'Console.log each operand right before the condition — the combined result will trigger on the wrong input combination',
+    test: (line) => /\|\|/.test(line) || /&&/.test(line),
+    apply: (line) => {
+      if (/\|\|/.test(line)) return line.replace('||', '&&');
+      if (/&&/.test(line)) return line.replace('&&', '||');
+      return null;
+    }
+  },
+  {
+    id: 'scope-elevation', category: 'state', levels: ['hard'],
+    label: 'Scope elevation failure',
+    devtool: 'Scope panel while stepping through the loop/function — the "global" value resets every call instead of persisting',
+    test: (line, ctx) => /^\s*(let|const)\s+([a-zA-Z_$][a-zA-Z0-9_$]*)\s*=\s*0\s*;?\s*$/.test(line) && /score|count|total|health|lives/i.test(line),
+    apply: (line, ctx) => {
+      // find a function/loop body a few lines below to relocate the declaration text into (as a duplicate re-decl),
+      // simulated by inserting a redeclaration inside the nearest following block.
+      const m = line.match(/^(\s*)(let|const)\s+([a-zA-Z_$][a-zA-Z0-9_$]*)\s*=\s*0\s*;?\s*$/);
+      if (!m) return null;
+      const varName = m[3];
+      for (let j = ctx.idx + 1; j < Math.min(ctx.idx + 40, ctx.lines.length); j++) {
+        if (!isMutableLine(j, ctx.ranges)) continue;
+        if (/function\s+\w+\s*\(|=>\s*\{|\bfor\s*\(|\bwhile\s*\(/.test(ctx.lines[j])) {
+          // insert re-declaration right after this line, resetting it every call/tick
+          const braceLine = j;
+          const indentMatch = ctx.lines[braceLine + 1] ? ctx.lines[braceLine + 1].match(/^(\s*)/) : ['', '  '];
+          const indent = indentMatch[1] || '  ';
+          ctx.insertAfter = { at: braceLine, text: `${indent}let ${varName} = 0;` };
+          ctx.log({
+            category: 'state', label: 'Scope elevation failure',
+            original: `(global) ${line.trim()}`,
+            mutated: `${indent}let ${varName} = 0;  // inserted inside block at line ${braceLine + 2}`,
+            detail: `A shadow "let ${varName} = 0" was inserted inside the nearest function/loop body, so it resets every call instead of persisting globally.`,
+            devtool: 'Scope panel while stepping through the loop/function — the "global" value resets every call instead of persisting',
+            line: braceLine + 2
+          });
+          return { handledExternally: true };
+        }
+      }
+      return null;
+    }
+  }
+];
+
+/* ---------------------------------------------------------------
+   Engine
+--------------------------------------------------------------- */
+function buildContext(lines, ranges, logFn) {
+  return { lines, ranges, idx: -1, log: logFn, insertAfter: null };
+}
+
+function runMutation() {
+  engineError.classList.add('hidden');
+  const raw = inputCode.value;
+  if (raw.trim().length === 0) {
+    showEngineError('Paste some code first — the sabotage engine needs a working program to break.');
+    return;
+  }
+
+  setRng();
+
+  const activeCats = Object.keys(state.categories).filter(c => state.categories[c]);
+  if (activeCats.length === 0) {
+    showEngineError('Select at least one bug category.');
+    return;
+  }
+
+  const lines = raw.split('\n');
+  const originalLines = lines.slice();
+  const ranges = findScriptLineRanges(lines);
+
+  if (ranges.length === 0) {
+    showEngineError('No <script> block found — mutations only ever touch JavaScript, never raw HTML or CSS. Add a <script> tag with your JS.');
+    return;
+  }
+
+  const manifest = [];
+  const workingLines = lines.slice();
+  let pendingInsert = null;
+
+  const ctx = buildContext(workingLines, ranges, (entry) => manifest.push(entry));
+
+  const eligibleRules = RULES.filter(r => r.levels.includes(state.level) && activeCats.includes(r.category));
+
+  const bugsNeeded = state.bugs;
+  let attempts = 0;
+  const maxAttempts = 400;
+  const usedLineIdx = new Set();
+
+  while (manifest.length < bugsNeeded && attempts < maxAttempts) {
+    attempts++;
+    const rule = pick(eligibleRules.length ? eligibleRules : RULES);
+    // gather candidate mutable lines for this rule
+    const candidates = [];
+    for (let i = 0; i < workingLines.length; i++) {
+      if (!isMutableLine(i, ranges)) continue;
+      if (usedLineIdx.has(i)) continue;
+      if (rule.test(workingLines[i], { lines: workingLines, idx: i, ranges })) {
+        candidates.push(i);
+      }
+    }
+    if (candidates.length === 0) continue;
+
+    const targetIdx = pick(candidates);
+    ctx.idx = targetIdx;
+    const original = workingLines[targetIdx];
+    const result = rule.apply(original, ctx);
+
+    if (result && result.handledExternally) {
+      usedLineIdx.add(targetIdx);
+      if (ctx.insertAfter) { pendingInsert = ctx.insertAfter; ctx.insertAfter = null; }
+      continue;
+    }
+    if (!result || result === original) continue;
+
+    workingLines[targetIdx] = result;
+    usedLineIdx.add(targetIdx);
+    manifest.push({
+      category: rule.category,
+      label: rule.label,
+      original,
+      mutated: result,
+      detail: describeMutation(rule.id, original, result),
+      devtool: rule.devtool,
+      line: targetIdx + 1
+    });
+  }
+
+  if (pendingInsert) {
+    workingLines.splice(pendingInsert.at + 1, 0, pendingInsert.text);
+  }
+
+  if (manifest.length === 0) {
+    showEngineError('Could not find a safe place to inject the selected bug categories at this difficulty — try enabling more categories or pasting more code.');
+    return;
+  }
+
+  state.originalLines = originalLines;
+  state.mutatedLines = workingLines;
+  state.manifest = manifest;
+
+  outputCode.value = workingLines.join('\n');
+  btnCopy.disabled = false;
+  btnDownload.disabled = false;
+  drawerToggle.disabled = false;
+
+  renderDiff(originalLines, workingLines);
+  renderManifest(manifest);
+  renderSuspects(manifest, workingLines, ranges);
+  flashOutput();
+}
+
+/* ---------------------------------------------------------------
+   Suspect lines — the real bug line plus 2 red-herring lines,
+   so students get a narrowed search space without the answer.
+--------------------------------------------------------------- */
+function renderSuspects(manifest, workingLines, ranges) {
+  const bugLineNums = new Set(manifest.map(m => m.line));
+
+  // pool of plausible-looking, non-trivial mutable lines that are NOT bugs
+  const herringPool = [];
+  for (let i = 0; i < workingLines.length; i++) {
+    const lineNum = i + 1;
+    if (bugLineNums.has(lineNum)) continue;
+    if (!isMutableLine(i, ranges)) continue;
+    const text = workingLines[i].trim();
+    if (text.length < 6) continue;
+    if (/^(\/\/|\*|\/\*)/.test(text)) continue;
+    herringPool.push(lineNum);
+  }
+
+  const usedHerrings = new Set();
+  const groups = manifest.map((m, idx) => {
+    const available = herringPool.filter(n => !usedHerrings.has(n));
+    const herrings = [];
+    while (herrings.length < 2 && available.length > 0) {
+      const pickIdx = Math.floor(rng() * available.length);
+      const candidate = available.splice(pickIdx, 1)[0];
+      herrings.push(candidate);
+      usedHerrings.add(candidate);
+    }
+    const suspects = [m.line, ...herrings].map(n => ({ line: n, text: workingLines[n - 1] }));
+    // shuffle so the real bug isn't always listed first
+    for (let i = suspects.length - 1; i > 0; i--) {
+      const j = Math.floor(rng() * (i + 1));
+      [suspects[i], suspects[j]] = [suspects[j], suspects[i]];
+    }
+    return { idx, category: m.category, suspects };
+  });
+
+  suspectGroups.innerHTML = groups.map(g => `
+    <div class="border border-[var(--line)] rounded-md p-3">
+      <div class="flex items-center gap-2 mb-2">
+        <span class="badge-dot" style="background:${CAT_COLORS[g.category] || 'var(--ink-dim)'}"></span>
+        <span class="mono text-[11px] text-[var(--ink-dim)]">GROUP ${g.idx + 1} · ${CAT_LABELS[g.category] || g.category}</span>
+      </div>
+      <div class="flex flex-col gap-1.5">
+        ${g.suspects.map(s => `
+          <div class="mono text-[11.5px] px-2.5 py-1.5 rounded bg-[var(--panel-2)] border border-[var(--line)] flex gap-3 whitespace-pre-wrap break-all">
+            <span class="text-[var(--ink-dim)] shrink-0">L${s.line}</span>
+            <span>${escapeHtml(s.text.trim())}</span>
+          </div>
+        `).join('')}
+      </div>
+    </div>
+  `).join('');
+
+  suspectPanel.classList.remove('hidden');
+  lucide.createIcons();
+}
+
+function describeMutation(ruleId, original, mutated) {
+  switch (ruleId) {
+    case 'missing-paren': return 'A closing parenthesis was removed from a function call on this line, breaking the parser.';
+    case 'dom-selector-typo': return 'The element ID inside the selector was altered, so the lookup now returns null.';
+    case 'relational-flip': return 'A relational operator was flipped, inverting which branch of the comparison runs.';
+    case 'arithmetic-swap': return 'An increment/decrement assignment operator was swapped, reversing the direction of change.';
+    case 'strict-equality': return 'Strict equality was swapped with strict inequality (or vice versa), inverting the condition.';
+    case 'boundary-off-by-one': return 'The loop bound was widened by one, causing it to read past the end of the array.';
+    case 'storage-key-corrupt': return 'The localStorage key string was altered so reads and writes no longer agree, silently losing persisted state.';
+    case 'timer-event-hijack': return 'A cleanup call (clearInterval/removeEventListener) was commented out, so timers stack or listeners fire on stale state.';
+    case 'boolean-inversion': return 'A logical OR/AND was swapped, changing which combination of conditions triggers the branch.';
+    default: return 'This line was altered.';
+  }
+}
+
+function showEngineError(msg) {
+  engineError.classList.remove('hidden');
+  engineError.querySelector('span').textContent = msg;
+}
+
+/* ---------------------------------------------------------------
+   Diff rendering (simple LCS-based line diff)
+--------------------------------------------------------------- */
+function lcsDiff(a, b) {
+  const n = a.length, m = b.length;
+  const dp = Array.from({ length: n + 1 }, () => new Uint32Array(m + 1));
+  for (let i = n - 1; i >= 0; i--) {
+    for (let j = m - 1; j >= 0; j--) {
+      dp[i][j] = a[i] === b[j] ? dp[i+1][j+1] + 1 : Math.max(dp[i+1][j], dp[i][j+1]);
+    }
+  }
+  const ops = [];
+  let i = 0, j = 0;
+  while (i < n && j < m) {
+    if (a[i] === b[j]) { ops.push({ type: 'ctx', text: a[i] }); i++; j++; }
+    else if (dp[i+1][j] >= dp[i][j+1]) { ops.push({ type: 'del', text: a[i] }); i++; }
+    else { ops.push({ type: 'add', text: b[j] }); j++; }
+  }
+  while (i < n) { ops.push({ type: 'del', text: a[i] }); i++; }
+  while (j < m) { ops.push({ type: 'add', text: b[j] }); j++; }
+  return ops;
+}
+
+function escapeHtml(s) {
+  return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+}
+
+function renderDiff(orig, mutated) {
+  const ops = lcsDiff(orig, mutated);
+  // collapse long unchanged runs to keep it scannable
+  const CONTEXT = 2;
+  const rows = [];
+  let i = 0;
+  while (i < ops.length) {
+    if (ops[i].type === 'ctx') {
+      let j = i;
+      while (j < ops.length && ops[j].type === 'ctx') j++;
+      const runLen = j - i;
+      if (runLen > CONTEXT * 2) {
+        for (let k = i; k < i + CONTEXT; k++) rows.push(ops[k]);
+        rows.push({ type: 'skip', count: runLen - CONTEXT * 2 });
+        for (let k = j - CONTEXT; k < j; k++) rows.push(ops[k]);
+      } else {
+        for (let k = i; k < j; k++) rows.push(ops[k]);
+      }
+      i = j;
+    } else {
+      rows.push(ops[i]); i++;
+    }
+  }
+
+  let html = '';
+  let lineNo = 1;
+  for (const op of rows) {
+    if (op.type === 'skip') {
+      html += `<div class="px-4 py-1.5 text-[11px] text-[var(--ink-dim)] bg-[var(--panel-2)]">⋯ ${op.count} unchanged line${op.count===1?'':'s'} ⋯</div>`;
+      continue;
+    }
+    const cls = op.type === 'add' ? 'diff-add' : op.type === 'del' ? 'diff-del' : 'diff-ctx';
+    const sign = op.type === 'add' ? '+' : op.type === 'del' ? '−' : '·';
+    html += `<div class="${cls} px-4 py-0.5 flex gap-3 whitespace-pre-wrap break-all">
+      <span class="lc-gutter w-4 shrink-0">${sign}</span>
+      <span>${escapeHtml(op.text) || '&nbsp;'}</span>
+    </div>`;
+  }
+  diffOutput.innerHTML = html;
+}
+
+/* ---------------------------------------------------------------
+   Manifest rendering
+--------------------------------------------------------------- */
+const CAT_COLORS = { syntax: 'var(--green)', logic: 'var(--amber)', state: 'var(--crimson)', dom: 'var(--cyan)' };
+const CAT_LABELS = { syntax: 'Syntax & Typos', logic: 'Logical Operators', state: 'State & Scope', dom: 'DOM / Event Listeners' };
+
+function renderManifest(manifest) {
+  manifestOutput.innerHTML = manifest.map((m, idx) => {
+    const color = CAT_COLORS[m.category] || 'var(--ink-dim)';
+    return `
+    <div class="border border-[var(--line)] rounded-md p-3.5 bg-[var(--panel-2)]">
+      <div class="flex items-center justify-between mb-2">
+        <div class="flex items-center gap-2">
+          <span class="badge-dot" style="background:${color}"></span>
+          <span class="mono text-[11px] text-[var(--ink-dim)]">MUTANT-${String(idx+1).padStart(2,'0')}</span>
+          <span class="text-xs font-medium">${m.label}</span>
+        </div>
+        <span class="mono text-[11px] text-[var(--ink-dim)]">line ${m.line}</span>
+      </div>
+      <div class="grid grid-cols-1 md:grid-cols-2 gap-2 mb-2">
+        <div class="mono text-[11.5px] px-2.5 py-1.5 rounded diff-del whitespace-pre-wrap break-all">${escapeHtml(m.original)}</div>
+        <div class="mono text-[11.5px] px-2.5 py-1.5 rounded diff-add whitespace-pre-wrap break-all">${escapeHtml(m.mutated)}</div>
+      </div>
+      <p class="text-xs text-[var(--ink-dim)] leading-relaxed mb-1.5">${m.detail}</p>
+      <div class="flex items-start gap-1.5 text-xs text-[var(--cyan)]">
+        <i data-lucide="wrench" class="w-3.5 h-3.5 mt-0.5 shrink-0"></i>
+        <span>${m.devtool}</span>
+      </div>
+    </div>`;
+  }).join('');
+  lucide.createIcons();
+}
+
+/* ---------------------------------------------------------------
+   UI wiring
+--------------------------------------------------------------- */
+document.getElementById('levelPills').addEventListener('click', (e) => {
+  const btn = e.target.closest('.pill');
+  if (!btn) return;
+  document.querySelectorAll('#levelPills .pill').forEach(p => p.dataset.active = 'false');
+  btn.dataset.active = 'true';
+  state.level = btn.dataset.level;
+  state.bugs = parseInt(btn.dataset.bugs, 10);
+});
+
+document.getElementById('categoryChips').addEventListener('change', (e) => {
+  const input = e.target.closest('input[type=checkbox]');
+  if (!input) return;
+  const cat = input.dataset.catInput;
+  state.categories[cat] = input.checked;
+  input.closest('.cat-chip').dataset.active = input.checked ? 'true' : 'false';
+});
+
+$('modeRandom').addEventListener('click', () => {
+  state.mode = 'random';
+  $('modeRandom').dataset.active = 'true';
+  $('modeSeed').dataset.active = 'false';
+  $('seedWrap').classList.add('hidden');
+});
+$('modeSeed').addEventListener('click', () => {
+  state.mode = 'seed';
+  $('modeSeed').dataset.active = 'true';
+  $('modeRandom').dataset.active = 'false';
+  $('seedWrap').classList.remove('hidden');
+});
+$('seedInput').addEventListener('input', (e) => { state.seed = e.target.value; });
+
+btnSabotage.addEventListener('click', runMutation);
+
+$('btnSample').addEventListener('click', () => {
+  inputCode.value = SAMPLE_CODE;
+  updateStats();
+  outputCode.value = '';
+  btnCopy.disabled = true;
+  btnDownload.disabled = true;
+  drawerToggle.disabled = true;
+  suspectPanel.classList.add('hidden');
+  closeDrawer();
+});
+
+$('btnReset').addEventListener('click', () => {
+  inputCode.value = '';
+  outputCode.value = '';
+  updateStats();
+  engineError.classList.add('hidden');
+  btnCopy.disabled = true;
+  btnDownload.disabled = true;
+  drawerToggle.disabled = true;
+  diffOutput.innerHTML = '';
+  manifestOutput.innerHTML = '';
+  suspectGroups.innerHTML = '';
+  suspectPanel.classList.add('hidden');
+  closeDrawer();
+});
+
+btnCopy.addEventListener('click', async () => {
+  if (!outputCode.value) return;
+  try {
+    await navigator.clipboard.writeText(outputCode.value);
+    showToast('Sabotaged code copied');
+  } catch {
+    outputCode.select();
+    document.execCommand('copy');
+    showToast('Sabotaged code copied');
+  }
+});
+
+$('btnDownload').addEventListener('click', () => {
+  if (!outputCode.value) return;
+  const blob = new Blob([outputCode.value], { type: 'text/html' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = 'index-sabotaged.html';
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  URL.revokeObjectURL(url);
+  showToast('index-sabotaged.html downloaded');
+});
+
+function closeDrawer() {
+  drawerBody.classList.remove('open');
+  drawerChev.classList.remove('rot');
+}
+drawerToggle.addEventListener('click', () => {
+  if (drawerToggle.disabled) return;
+  drawerBody.classList.toggle('open');
+  drawerChev.classList.toggle('rot');
+});
+
+document.querySelectorAll('.tab-btn').forEach(tab => {
+  tab.addEventListener('click', () => {
+    document.querySelectorAll('.tab-btn').forEach(t => t.dataset.active = 'false');
+    tab.dataset.active = 'true';
+    const which = tab.dataset.tab;
+    $('tabDiff').classList.toggle('hidden', which !== 'diff');
+    $('tabManifest').classList.toggle('hidden', which !== 'manifest');
+  });
+});
+
+let toastTimer = null;
+function showToast(msg) {
+  toastMsg.textContent = msg;
+  toast.classList.add('show');
+  clearTimeout(toastTimer);
+  toastTimer = setTimeout(() => toast.classList.remove('show'), 2200);
+}
+
+function flashOutput() {
+  outputCode.style.boxShadow = '0 0 0 2px rgba(255,77,109,0.6)';
+  setTimeout(() => { outputCode.style.boxShadow = ''; }, 500);
+}
+
+updateStats();
+</script>
+</body>
+</html>
