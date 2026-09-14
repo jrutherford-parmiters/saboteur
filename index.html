@@ -677,48 +677,21 @@ function buildContext(lines, ranges, logFn) {
   return { lines, ranges, idx: -1, log: logFn, insertAfter: null };
 }
 
-function runMutation() {
-  engineError.classList.add('hidden');
-  const raw = inputCode.value;
-  if (raw.trim().length === 0) {
-    showEngineError('Paste some code first — the sabotage engine needs a working program to break.');
-    return;
-  }
-
-  setRng();
-
-  const activeCats = Object.keys(state.categories).filter(c => state.categories[c]);
-  if (activeCats.length === 0) {
-    showEngineError('Select at least one bug category.');
-    return;
-  }
-
-  const lines = raw.split('\n');
-  const originalLines = lines.slice();
-  const ranges = findScriptLineRanges(lines);
-
-  if (ranges.length === 0) {
-    showEngineError('No <script> block found — mutations only ever touch JavaScript, never raw HTML or CSS. Add a <script> tag with your JS.');
-    return;
-  }
-
+function generateMutations(lines, ranges, level, categories, count) {
+  const activeCats = Object.keys(categories).filter(c => categories[c]);
   const manifest = [];
   const workingLines = lines.slice();
   let pendingInsert = null;
-
   const ctx = buildContext(workingLines, ranges, (entry) => manifest.push(entry));
+  const eligibleRules = RULES.filter(r => r.levels.includes(level) && activeCats.includes(r.category));
 
-  const eligibleRules = RULES.filter(r => r.levels.includes(state.level) && activeCats.includes(r.category));
-
-  const bugsNeeded = state.bugs;
   let attempts = 0;
   const maxAttempts = 400;
   const usedLineIdx = new Set();
 
-  while (manifest.length < bugsNeeded && attempts < maxAttempts) {
+  while (manifest.length < count && attempts < maxAttempts) {
     attempts++;
     const rule = pick(eligibleRules.length ? eligibleRules : RULES);
-    // gather candidate mutable lines for this rule
     const candidates = [];
     for (let i = 0; i < workingLines.length; i++) {
       if (!isMutableLine(i, ranges)) continue;
@@ -758,6 +731,36 @@ function runMutation() {
     workingLines.splice(pendingInsert.at + 1, 0, pendingInsert.text);
   }
 
+  return { manifest, workingLines };
+}
+
+function runMutation() {
+  engineError.classList.add('hidden');
+  const raw = inputCode.value;
+  if (raw.trim().length === 0) {
+    showEngineError('Paste some code first — the sabotage engine needs a working program to break.');
+    return;
+  }
+
+  setRng();
+
+  const activeCats = Object.keys(state.categories).filter(c => state.categories[c]);
+  if (activeCats.length === 0) {
+    showEngineError('Select at least one bug category.');
+    return;
+  }
+
+  const lines = raw.split('\n');
+  const originalLines = lines.slice();
+  const ranges = findScriptLineRanges(lines);
+
+  if (ranges.length === 0) {
+    showEngineError('No <script> block found — mutations only ever touch JavaScript, never raw HTML or CSS. Add a <script> tag with your JS.');
+    return;
+  }
+
+  const { manifest, workingLines } = generateMutations(lines, ranges, state.level, state.categories, state.bugs);
+
   if (manifest.length === 0) {
     showEngineError('Could not find a safe place to inject the selected bug categories at this difficulty — try enabling more categories or pasting more code.');
     return;
@@ -774,14 +777,15 @@ function runMutation() {
 
   renderDiff(originalLines, workingLines);
   renderManifest(manifest);
-  buildQuiz(manifest, workingLines, ranges);
+  buildQuiz(manifest, workingLines, ranges, originalLines);
   flashOutput();
 }
 
 /* ---------------------------------------------------------------
-   Interactive "Find the bug" quiz — one bug per question, 3 lines
-   to choose from (the real mutation + 2 hard-to-distinguish
-   red herrings), instant feedback, then advance automatically.
+   Interactive "Find the bug" quiz — rolling: one question at a
+   time, instant feedback, and a fresh question keeps appearing
+   for as long as the student keeps playing (not capped at the
+   original bug count).
 --------------------------------------------------------------- */
 let quizState = null;
 
@@ -802,7 +806,7 @@ function tokenSignature(text) {
   return sig;
 }
 
-function buildQuiz(manifest, workingLines, ranges) {
+function buildQuestions(manifest, workingLines, ranges) {
   const bugLineNums = new Set(manifest.map(m => m.line));
 
   const pool = [];
@@ -817,10 +821,8 @@ function buildQuiz(manifest, workingLines, ranges) {
   }
 
   const usedHerrings = new Set();
-  const questions = manifest.map((m, idx) => {
+  return manifest.map((m) => {
     const bugSig = tokenSignature(m.mutated);
-    // rank herring candidates by how many structural tokens they share
-    // with the buggy line, so options look equally plausible
     const ranked = pool
       .filter(p => !usedHerrings.has(p.line))
       .map(p => ({ ...p, overlap: p.sig.filter(s => bugSig.includes(s)).length }))
@@ -828,7 +830,6 @@ function buildQuiz(manifest, workingLines, ranges) {
 
     const herrings = ranked.slice(0, 2);
     herrings.forEach(h => usedHerrings.add(h.line));
-    // fall back to any remaining line if the file is short on similar ones
     while (herrings.length < 2) {
       const fallback = pool.find(p => !usedHerrings.has(p.line));
       if (!fallback) break;
@@ -843,21 +844,57 @@ function buildQuiz(manifest, workingLines, ranges) {
     }
     return { manifestEntry: m, options };
   });
+}
 
-  quizState = { questions, current: 0, correct: 0, answered: false };
+function buildQuiz(manifest, workingLines, ranges, originalLines) {
+  const questions = buildQuestions(manifest, workingLines, ranges);
+
+  quizState = {
+    questions,
+    current: 0,
+    correct: 0,
+    answered: false,
+    // context kept so the quiz can keep generating fresh rounds
+    // once the initial batch runs out
+    originalLines,
+    ranges,
+    level: state.level,
+    categories: { ...state.categories },
+    exhausted: false
+  };
   suspectPanel.classList.remove('hidden');
   quizDone.classList.add('hidden');
   quizNext.classList.add('hidden');
   renderQuizQuestion();
 }
 
+function ensureNextQuestion() {
+  // called when we're about to move past the last built question —
+  // generate one more fresh round from the original code so the
+  // quiz keeps rolling instead of stopping.
+  if (quizState.current < quizState.questions.length) return true;
+  if (quizState.exhausted) return false;
+
+  const { manifest, workingLines } = generateMutations(
+    quizState.originalLines, quizState.ranges, quizState.level, quizState.categories, 1
+  );
+  if (manifest.length === 0) {
+    quizState.exhausted = true;
+    return false;
+  }
+  const [newQuestion] = buildQuestions(manifest, workingLines, quizState.ranges);
+  quizState.questions.push(newQuestion);
+  return true;
+}
+
 function renderQuizQuestion() {
   const q = quizState.questions[quizState.current];
   quizState.answered = false;
-  quizProgress.textContent = `Question ${quizState.current + 1} of ${quizState.questions.length}`;
+  quizProgress.textContent = `Question ${quizState.current + 1}`;
   quizScore.textContent = quizState.current > 0 ? `Score so far: ${quizState.correct}/${quizState.current}` : '';
   quizExplain.classList.add('hidden');
   quizNext.classList.add('hidden');
+  quizDone.classList.add('hidden');
 
   quizQuestion.innerHTML = q.options.map((opt, i) => `
     <button class="quiz-option mono text-[12px] leading-relaxed px-3 py-2.5 rounded-md w-full flex gap-3 whitespace-pre-wrap break-all" data-opt-idx="${i}">
@@ -904,15 +941,25 @@ function handleQuizAnswer(optIdx) {
 
   quizScore.textContent = `Score so far: ${quizState.correct}/${quizState.current + 1}`;
 
-  if (quizState.current < quizState.questions.length - 1) {
+  const hasMore = ensureNextQuestion();
+  if (hasMore) {
     quizNext.classList.remove('hidden');
+    clearTimeout(quizAutoTimer);
+    quizAutoTimer = setTimeout(() => {
+      if (quizState && quizState.answered) {
+        quizState.current++;
+        renderQuizQuestion();
+      }
+    }, 2200);
   } else {
     quizDone.classList.remove('hidden');
-    quizDone.textContent = `Quiz complete — ${quizState.correct}/${quizState.questions.length} correct. Open the diff and audit log below to check every line against your reasoning.`;
+    quizDone.textContent = `Ran out of fresh lines to mutate on this file — ${quizState.correct}/${quizState.current + 1} correct so far. Paste more code or widen the bug categories to keep going.`;
   }
 }
 
+let quizAutoTimer = null;
 quizNext.addEventListener('click', () => {
+  clearTimeout(quizAutoTimer);
   quizState.current++;
   renderQuizQuestion();
 });
@@ -1099,6 +1146,7 @@ $('btnReset').addEventListener('click', () => {
   quizExplain.classList.add('hidden');
   quizDone.classList.add('hidden');
   quizState = null;
+  clearTimeout(quizAutoTimer);
   suspectPanel.classList.add('hidden');
   closeDrawer();
 });
